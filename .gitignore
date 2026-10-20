@@ -1,0 +1,22 @@
+node_modules
+dist
+dist-ssr
+*.local
+*.tsbuildinfo
+.vscode/*
+!.vscode/extensions.json
+docs
+# Claude Code 지침과 인수인계 문서 (로컬 전용)
+dev-docs
+/CLAUDE.md
+coverage
+
+# 환경변수 (예: VITE_API_PROXY_TARGET에 실제 EKS/ALB 주소가 들어감)
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+# CI npm 캐시
+.npm

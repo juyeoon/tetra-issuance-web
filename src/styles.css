@@ -1,0 +1,254 @@
+/* 색은 CSS 변수로만 정의한다. 컴포넌트는 변수만 참조한다. CSS는 이 파일 한 벌이다. (CLAUDE.md §6.3)
+   테마는 앱 루트 요소의 클래스(theme-WHITE 등) 하나로 바꾼다. 값은 지침의 색상 표 그대로이고 표 밖의 색은 만들지 않는다.
+   :root 기본값은 WHITE와 같다. 테마를 모르는 화면(로딩, event.json 에러, NotFound)이 이 값을 쓴다(확정). */
+:root,
+.theme-WHITE {
+  --bg: #ffffff;
+  --surface: #f8fafc;
+  --border: #e2e8f0;
+  --text: #0f172a;
+  --text-sub: #475569;
+  --primary: #ea580c;
+  --primary-hover: #c2410c;
+  --on-primary: #ffffff;
+}
+
+.theme-WARM_ORANGE {
+  --bg: #fff7ed;
+  --surface: #ffffff;
+  --border: #fed7aa;
+  --text: #431407;
+  --text-sub: #9a3412;
+  --primary: #c2410c;
+  --primary-hover: #9a3412;
+  --on-primary: #ffffff;
+}
+
+.theme-DARK {
+  --bg: #1e293b;
+  --surface: #334155;
+  --border: #475569;
+  --text: #f1f5f9;
+  --text-sub: #cbd5e1;
+  --primary: #fb923c;
+  --primary-hover: #f97316;
+  --on-primary: #1e293b;
+}
+
+.theme-BLUE {
+  --bg: #eff6ff;
+  --surface: #ffffff;
+  --border: #bfdbfe;
+  --text: #1e3a8a;
+  --text-sub: #475569;
+  --primary: #2563eb;
+  --primary-hover: #1d4ed8;
+  --on-primary: #ffffff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+  /* 한국어 문장을 단어 중간에서 줄바꿈하지 않는다(좁은 칸, 375px). */
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  background: var(--bg);
+}
+
+/* 테마 클래스를 받는 앱 루트. 화면 전체 배경과 글자를 변수 쌍으로 칠한다. */
+.app-root {
+  min-height: 100vh;
+  color: var(--text);
+  background: var(--bg);
+}
+
+.page {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 48px 24px;
+}
+
+.page-center {
+  text-align: center;
+}
+
+.banner {
+  display: block;
+  max-width: 100%;
+  margin: 0 auto 24px;
+}
+
+.countdown {
+  font-size: 48px;
+  font-weight: 700;
+  color: var(--primary);
+  margin: 8px 0;
+}
+
+.notice {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 24px 0;
+}
+
+.caption {
+  color: var(--text-sub);
+  font-size: 14px;
+  margin-bottom: 24px;
+}
+
+.primary-button {
+  width: 100%;
+  padding: 14px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--on-primary);
+  background: var(--primary);
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.primary-button:hover:not(:disabled) {
+  background: var(--primary-hover);
+}
+
+.primary-button:disabled {
+  color: var(--text-sub);
+  background: var(--border);
+  cursor: not-allowed;
+}
+
+.spinner {
+  width: 32px;
+  height: 32px;
+  margin: 0 auto 16px;
+  border: 3px solid var(--border);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.waiting-box {
+  border: 1px dashed var(--text-sub);
+  border-radius: 8px;
+  padding: 24px;
+  background: var(--surface);
+}
+
+.waiting-count {
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+/* 04 쿠폰 발급: 02 카드와 같은 폭(.page)의 한 열로 쌓는다. 순서는 layout.ts의 stackOrder가 정한다.
+   h는 요소의 가로 정렬로만 쓴다. 빈 행은 접는다. (CLAUDE.md §6.1, 사용자 결정) */
+.layout-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.layout-align-left {
+  text-align: left;
+}
+
+.layout-align-center {
+  text-align: center;
+}
+
+.layout-align-right {
+  text-align: right;
+}
+
+.layout-item .banner {
+  margin: 0;
+}
+
+.layout-align-left .banner {
+  margin-right: auto;
+}
+
+.layout-align-center .banner {
+  margin: 0 auto;
+}
+
+.layout-align-right .banner {
+  margin-left: auto;
+}
+
+.issue-title {
+  margin: 0;
+}
+
+.issue-coupons .caption {
+  margin: 0 0 8px;
+}
+
+.coupon-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+  text-align: left;
+}
+
+.coupon-item {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 16px;
+  background: var(--surface);
+}
+
+.coupon-name {
+  font-weight: 600;
+}
+
+.coupon-description {
+  color: var(--text-sub);
+  font-size: 14px;
+}
+
+/* 모달 바깥을 덮는 층은 테마와 무관한 반투명 검정이다(지침 제안값). 모달 자체는 --surface와 --text 쌍이다. */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.modal {
+  color: var(--text);
+  background: var(--surface);
+  border-radius: 8px;
+  padding: 32px;
+  max-width: 360px;
+  width: 100%;
+  text-align: center;
+}
+
+.modal-message {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.modal-submessage {
+  color: var(--text-sub);
+  font-size: 14px;
+}
