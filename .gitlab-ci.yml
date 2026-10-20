@@ -1,0 +1,55 @@
+# issuance-web CI — 이벤트 페이지(쿠폰 앱) 화면 (인프라 플랜 5-2 · 런북 9단계)
+#   MR   : test(타입 검사는 build 에 포함) · build
+#   main : 같음 + dist/ 산출물을 7일 보관 → CD(템플릿 버킷 업로드, JYP)가 needs: [build] 로 받는다
+#
+# 배포 경로(CD, 이 파일 밖 — CD-handsoff.md 3-2):
+#   dist/ → s3://tetra-templates-dev/apps/coupon/  (보호 Runner, main 만)
+#   → 이벤트 승인(WF1-2) 때 테넌트 버킷 events/live/<event_id>/ 로 복사 · event.json 생성
+#   업로드 규칙: app-assets/** 는 Cache-Control "public, max-age=31536000, immutable" 를 먼저,
+#              index.html 등 해시 없는 파일은 "public, max-age=0, s-maxage=60" 를 나중에. 옛 app-assets 는 지우지 않는다
+#
+# Runner: general (Docker 불필요). AWS 권한이 필요한 job 은 없다.
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS # MR 이 열린 브랜치는 MR 파이프라인만 (중복 방지)
+      when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "web"
+
+stages: [test, build]
+
+default:
+  image: node:22.22.0-alpine # .nvmrc = 22
+  tags: [general]
+  cache:
+    key:
+      files: [package-lock.json]
+    paths: [.npm/]
+  before_script:
+    - npm ci --cache .npm --prefer-offline --no-audit --no-fund
+
+test:
+  stage: test
+  script:
+    - npm run test # vitest run
+
+# 잡 이름 build 는 CD 가 needs 로 참조한다 — 바꾸면 CD 도 함께
+build:
+  stage: build
+  needs: [] # test 와 병렬 (빌드에 tsc 타입 검사 포함)
+  script:
+    - npm run build # tsc -b && vite build
+    # 배포 규칙 확인: 루트에 index.html, 해시 파일은 app-assets/, 소스맵 없음(원본 코드 공개 방지)
+    - test -f dist/index.html
+    - test -d dist/app-assets
+    - |
+      if find dist -name '*.map' | grep -q .; then
+        echo "소스맵(.map)이 dist 에 있다 — vite.config.ts build.sourcemap 확인"; exit 1
+      fi
+    - find dist -type f | sort
+  artifacts:
+    name: issuance-web-$CI_COMMIT_SHORT_SHA
+    paths: [dist/]
+    expire_in: 7 days
