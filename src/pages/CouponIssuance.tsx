@@ -93,19 +93,15 @@ export default function CouponIssuance() {
     title: <h1 className="issue-title">{eventInfo.name}</h1>,
     // 배너가 빈 값이면 그리지 않는다(깨진 이미지 금지).
     banner: eventInfo.bannerUrl !== '' ? <img className="banner" src={eventInfo.bannerUrl} alt="" /> : null,
-    // "받을 수 있는 쿠폰 N장"은 쿠폰 목록과 한 요소로 묶어 같은 칸에 함께 놓는다.
     couponList: (
-      <div className="issue-coupons">
-        <div className="caption">받을 수 있는 쿠폰 {coupons.length}장</div>
-        <ul className="coupon-list">
-          {coupons.map((coupon) => (
-            <li key={coupon.couponId} className="coupon-item">
-              <div className="coupon-name">{coupon.name}</div>
-              <div className="coupon-description">{coupon.description}</div>
-            </li>
-          ))}
-        </ul>
-      </div>
+      <ul className="coupon-list">
+        {coupons.map((coupon) => (
+          <li key={coupon.couponId} className="coupon-item">
+            <div className="coupon-name">{coupon.name}</div>
+            <div className="coupon-description">{coupon.description}</div>
+          </li>
+        ))}
+      </ul>
     ),
     issueButton: (
       <button className="primary-button" disabled={claiming} onClick={handleClaim}>
