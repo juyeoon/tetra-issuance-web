@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { entryNoticeOf, isBeforeEntryOpen, isEntryPendingRedirect, waitingRoomPhase } from './waitingRoom'
+import {
+  entryJitterMs,
+  entryNoticeOf,
+  isBeforeEntryOpen,
+  isEntryPendingRedirect,
+  START_RETRY_MIN_WAIT_MS,
+  startRetryDelayMs,
+  waitingRoomPhase,
+} from './waitingRoom'
 
 const ENTRY_OPEN = 1_000_000
 const START = ENTRY_OPEN + 60 * 60 * 1000
@@ -57,5 +65,30 @@ describe('entryNoticeOf (게이트 302 포함)', () => {
 
   it('종료 뒤에는 302로 왔어도 준비 중이 아니라 종료 판정에 맡긴다', () => {
     expect(entryNoticeOf(END, ENTRY_OPEN, END, true)).toBeNull()
+  })
+})
+
+describe('entryJitterMs (입장 지터, 02와 03 시작 재요청이 같이 씀)', () => {
+  it('0 ~ jitterMaxMs(1000ms)', () => {
+    expect(entryJitterMs(0)).toBe(0)
+    expect(entryJitterMs(0.5)).toBe(500)
+    for (let i = 0; i < 50; i++) {
+      const j = entryJitterMs()
+      expect(j).toBeGreaterThanOrEqual(0)
+      expect(j).toBeLessThan(1000)
+    }
+  })
+})
+
+describe('startRetryDelayMs (시작 전 409를 받은 뒤 다시 요청할 때까지)', () => {
+  it('보정된 지금 시각에서 startAt까지 남은 시간 + 지터', () => {
+    // 브라우저 시계가 34초 빨라 시작 34초 전에 들어온 경우(10-28 dev 이벤트 12)
+    expect(startRetryDelayMs(START, START - 34000, 0)).toBe(34000)
+    expect(startRetryDelayMs(START, START - 34000, 700)).toBe(34700)
+  })
+
+  it('화면 시계로는 이미 시작했으면 최소 1초를 기다린다', () => {
+    expect(startRetryDelayMs(START, START, 0)).toBe(START_RETRY_MIN_WAIT_MS)
+    expect(startRetryDelayMs(START, START + 5000, 300)).toBe(START_RETRY_MIN_WAIT_MS + 300)
   })
 })

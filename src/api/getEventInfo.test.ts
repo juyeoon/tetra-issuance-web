@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { getErrorNotice } from '../lib/errors'
-import { now, syncServerTime } from '../lib/serverTime'
+import { now, setServerOffset } from '../lib/serverTime'
 import { getEventInfo } from '.'
 
 const validBody = {
@@ -20,6 +20,9 @@ const validBody = {
   },
 }
 
+// 브라우저 시계. 초 단위 경계로 두어 Date 헤더(초 단위)와 정확히 비교한다.
+const DEVICE_MS = Date.UTC(2026, 9, 28, 0, 58, 0)
+
 async function noticeFor() {
   try {
     await getEventInfo()
@@ -33,13 +36,16 @@ afterEach(() => {
   vi.unstubAllGlobals()
   vi.unstubAllEnvs()
   vi.useRealTimers()
-  syncServerTime(null, null)
+  setServerOffset(0)
 })
 
-describe('getEventInfo (운영 경로: /event.json)', () => {
-  function mockFetch(response: () => Response | Promise<Response>) {
+describe('getEventInfo (운영 경로: /event.json + 시간 응답)', () => {
+  type Handler = () => Response | Promise<Response>
+
+  // /event.json과 /api/issuance/time을 따로 흉내 낸다.
+  function mockFetch(eventJson: Handler, time: Handler = () => Promise.reject(new TypeError('Failed to fetch'))) {
     vi.stubEnv('DEV', false)
-    const fn = vi.fn(async () => response())
+    const fn = vi.fn(async (url: string) => (url === '/event.json' ? eventJson() : time()))
     vi.stubGlobal('fetch', fn)
     return fn
   }
@@ -50,19 +56,94 @@ describe('getEventInfo (운영 경로: /event.json)', () => {
       headers: { 'content-type': 'application/json; charset=utf-8', ...headers },
     })
 
-  it('상대 경로 /event.json만 옵션 없이 읽는다', async () => {
-    const fn = mockFetch(json(200, validBody))
+  // 엣지 캐시 응답: Date는 지금 시각 그대로, Age는 캐시된 시간
+  const cachedEventJson = (ageSec: number) =>
+    json(200, validBody, { date: new Date(Date.now()).toUTCString(), age: String(ageSec) })
+
+  // 시간 응답: 왕복 rttMs 동안 시계를 흘리고, 서버는 왕복 한가운데에서 serverSkewMs만큼 어긋난 시각을 만든다.
+  const timeResponse =
+    (serverSkewMs: number, rttMs = 0, serverAt = 0.5): Handler =>
+    () => {
+      const sentAt = Date.now()
+      vi.setSystemTime(sentAt + rttMs)
+      return json(200, { now: sentAt + rttMs * serverAt + serverSkewMs }, { 'cache-control': 'no-store' })()
+    }
+
+  it('/event.json은 옵션 없이 한 번, 시간 응답은 /api/issuance/time으로 읽는다', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(DEVICE_MS)
+    const fn = mockFetch(json(200, validBody), timeResponse(0))
     await expect(getEventInfo()).resolves.toEqual(validBody)
-    expect(fn).toHaveBeenCalledTimes(1)
-    expect(fn.mock.calls[0]).toEqual(['/event.json'])
+    const eventJsonCalls = fn.mock.calls.filter(([url]) => url === '/event.json')
+    expect(eventJsonCalls).toEqual([['/event.json']])
+    expect(fn.mock.calls.filter(([url]) => url === '/api/issuance/time')).toHaveLength(3)
   })
 
-  it('Date, Age 헤더로 now()를 보정한다', async () => {
+  it('시간 응답으로 보정한다(서버 ±60초, 왕복 절반 보정)', async () => {
     vi.useFakeTimers()
-    vi.setSystemTime(Date.UTC(2026, 9, 15, 8, 3, 0)) // 브라우저 시계가 3분 빠름
-    mockFetch(json(200, validBody, { date: 'Thu, 15 Oct 2026 08:00:00 GMT', age: '20' }))
+    for (const skew of [60000, -60000]) {
+      vi.setSystemTime(DEVICE_MS)
+      mockFetch(cachedEventJson(40), timeResponse(skew, 200))
+      await getEventInfo()
+      expect(now() - Date.now(), `skew=${skew}`).toBe(skew)
+    }
+  })
+
+  it('표본 중 왕복이 가장 짧은 것을 쓴다', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(DEVICE_MS)
+    // 왕복 300, 100, 500ms. 응답이 왕복의 90% 지점에서 만들어져(비대칭) 왕복이 길수록 오차가 커진다.
+    const rtts = [300, 100, 500]
+    let i = 0
+    mockFetch(json(200, validBody), () => timeResponse(0, rtts[i++], 0.9)())
     await getEventInfo()
-    expect(now()).toBe(Date.UTC(2026, 9, 15, 8, 0, 20))
+    // 오차 = 왕복 × 0.4. 왕복 100ms 표본이면 40ms
+    expect(now() - Date.now()).toBe(40)
+  })
+
+  it('[회귀 10-28] 시간 응답이 없으면 Date만 쓰고 Age는 더하지 않는다', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(DEVICE_MS)
+    mockFetch(cachedEventJson(40))
+    await getEventInfo()
+    // 예전 계산(Date + Age)이면 40초 앞서 간다
+    expect(Math.abs(now() - Date.now())).toBeLessThan(1000)
+  })
+
+  it('[회귀 10-28] 새로고침을 반복해 Age가 0~59로 바뀌어도 보정값이 흔들리지 않는다', async () => {
+    vi.useFakeTimers()
+    for (let reload = 0; reload < 10; reload++) {
+      vi.setSystemTime(DEVICE_MS + reload * 6000)
+      mockFetch(cachedEventJson(reload * 6))
+      await getEventInfo()
+      expect(Math.abs(now() - Date.now()), `reload=${reload}`).toBeLessThan(1000)
+    }
+  })
+
+  it('시간 응답이 404, JSON 아님, 형식 오류면 Date로 대체하고 더 묻지 않는다', async () => {
+    vi.useFakeTimers()
+    const badTimes: Handler[] = [
+      () => new Response('', { status: 404 }),
+      () => new Response('<html></html>', { status: 200, headers: { 'content-type': 'text/html' } }),
+      json(200, { now: 'soon' }),
+      json(503, { now: Date.now() }),
+    ]
+    for (const [i, bad] of badTimes.entries()) {
+      vi.setSystemTime(DEVICE_MS)
+      // 서버 Date가 브라우저보다 5초 빠르다
+      const fn = mockFetch(json(200, validBody, { date: new Date(DEVICE_MS + 5000).toUTCString(), age: '30' }), bad)
+      await getEventInfo()
+      expect(now() - Date.now(), `case ${i}`).toBe(5000)
+      expect(fn.mock.calls.filter(([url]) => url === '/api/issuance/time'), `case ${i}`).toHaveLength(1)
+    }
+  })
+
+  it('Date도 없고 시간 응답도 없으면 보정하지 않는다', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(DEVICE_MS)
+    mockFetch(json(200, validBody))
+    await getEventInfo()
+    expect(now()).toBe(Date.now())
   })
 
   it('403, 404는 존재하지 않는 이벤트(403을 권한 없음으로 보지 않는다)', async () => {
@@ -76,7 +157,7 @@ describe('getEventInfo (운영 경로: /event.json)', () => {
   })
 
   it('5xx, JSON 아님, 깨진 JSON, 검증 실패, 네트워크 예외는 연결 오류 + 다시 시도', async () => {
-    const cases: Array<() => Response | Promise<Response>> = [
+    const cases: Handler[] = [
       () => new Response('<html></html>', { status: 503, headers: { 'content-type': 'text/html' } }),
       () => new Response('<html></html>', { status: 200, headers: { 'content-type': 'text/html' } }),
       () => new Response('{', { status: 200, headers: { 'content-type': 'application/json' } }),
@@ -93,7 +174,7 @@ describe('getEventInfo (운영 경로: /event.json)', () => {
   })
 })
 
-describe('getEventInfo (개발 빌드: 목 event.json)', () => {
+describe('getEventInfo (개발 빌드: 목 event.json + 목 시간 응답)', () => {
   function withSearch(search: string) {
     vi.stubGlobal('window', { location: { search } })
     const fn = vi.fn()
@@ -123,12 +204,30 @@ describe('getEventInfo (개발 빌드: 목 event.json)', () => {
     expect(new Date(info.endAt).getTime()).toBeGreaterThan(new Date(info.startAt).getTime())
   })
 
-  it('?clockSkew=로 Date를 꾸미면 now()가 그만큼 보정된다', async () => {
+  it('?clockSkew=로 서버 시각을 꾸미면 시간 응답으로 now()가 그만큼 보정된다', async () => {
     vi.useFakeTimers()
-    vi.setSystemTime(Date.UTC(2026, 9, 15, 8, 0, 0))
+    vi.setSystemTime(DEVICE_MS)
     withSearch('?clockSkew=-300')
     await getEventInfo()
-    expect(now()).toBe(Date.UTC(2026, 9, 15, 7, 55, 0))
+    expect(now()).toBe(DEVICE_MS - 300000)
+  })
+
+  it('?timeApi=fail이면 event.json의 Date로 대체한다(?clockSkew= 반영)', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(DEVICE_MS)
+    withSearch('?timeApi=fail&clockSkew=-300')
+    await getEventInfo()
+    expect(now()).toBe(DEVICE_MS - 300000)
+  })
+
+  it('[회귀 10-28] ?eventJsonAge=40을 붙여도 지금 시각이 앞서 가지 않는다(시간 응답, Date 대체 모두)', async () => {
+    vi.useFakeTimers()
+    for (const search of ['?eventJsonAge=40', '?eventJsonAge=40&timeApi=fail']) {
+      vi.setSystemTime(DEVICE_MS)
+      withSearch(search)
+      await getEventInfo()
+      expect(now(), search).toBe(DEVICE_MS)
+    }
   })
 
   it('?theme=, ?<요소>Pos=로 목 layout을 바꾼다', async () => {

@@ -1,7 +1,8 @@
 // API 호출은 전부 이 모듈에만 둔다. 화면 코드는 fetch/axios를 직접 쓰지 않는다. (CLAUDE.md §7)
-import { now, syncServerTime } from '../lib/serverTime'
+import { config } from '../config'
+import { deviceNow, now, offsetFromDateHeader, offsetFromSample, setServerOffset } from '../lib/serverTime'
 import { mockApiResponse } from '../mocks/api'
-import { buildMockEventJsonResponse } from '../mocks/event'
+import { buildMockEventJsonResponse, buildMockTimeResponse } from '../mocks/event'
 import { parseClaimResponse, type ClaimResult } from './parseClaimResponse'
 import { parseCursorResponse } from './parseCursorResponse'
 import { EventInfoError, parseEventInfo, type EventInfo } from './parseEventInfo'
@@ -108,16 +109,57 @@ export async function getQueueCursor(eventId: number): Promise<{ cursor: number 
   return parseCursorResponse(await readEnvelope(res, 'GET queue/cursor'))
 }
 
+// 서버 시각 응답. api-gate CloudFront Function이 오리진(Pod)까지 가지 않고 바로 답하므로 Pod가 뜨기 전에도 쓸 수 있고,
+// Cache-Control: no-store라 캐시된 시각이 오지 않는다. 본문은 { now: epoch ms }다. (CLAUDE.md §5.3, §7)
+// 개발 빌드에서는 개발 서버에 이 경로가 없으므로 항상 목을 쓴다(운영 번들에서는 이 분기가 빠진다, §9).
+const SERVER_TIME_PATH = '/api/issuance/time'
+
+function fetchServerTime(signal: AbortSignal): Promise<Response> {
+  return import.meta.env.DEV ? buildMockTimeResponse() : fetch(SERVER_TIME_PATH, { signal })
+}
+
+// 시간 응답 표본 하나. 보낸 시각과 받은 시각을 재서 왕복의 절반을 보정한다. 실패하면 null.
+async function sampleServerOffset(): Promise<{ rttMs: number; offsetMs: number } | null> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), config.serverTimeTimeoutMs)
+  const sentAt = deviceNow()
+  try {
+    const res = await fetchServerTime(controller.signal)
+    const receivedAt = deviceNow()
+    if (!res.ok || !isJsonResponse(res)) return null
+    const body: unknown = await res.json()
+    if (!isRecord(body) || typeof body.now !== 'number' || !Number.isFinite(body.now)) return null
+    return { rttMs: receivedAt - sentAt, offsetMs: offsetFromSample(body.now, sentAt, receivedAt) }
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+// 표본 중 왕복이 가장 짧은 것으로 보정값을 정한다. 표본이 실패하면 더 묻지 않는다. 하나도 못 받으면 null.
+async function measureServerOffset(): Promise<number | null> {
+  let best: { rttMs: number; offsetMs: number } | null = null
+  for (let i = 0; i < config.serverTimeSamples; i++) {
+    const sample = await sampleServerOffset()
+    if (sample === null) break
+    if (best === null || sample.rttMs < best.rttMs) best = sample
+  }
+  return best?.offsetMs ?? null
+}
+
 // 이벤트 정보. 같은 호스트의 정적 파일 /event.json만 읽는다(/info는 쓰지 않는다). (CLAUDE.md §5.1)
 // S3 정적 파일이라 { success, data } 봉투가 없어 readEnvelope를 쓰지 않고, content-type 확인과 상태 코드 판단만
 // 같은 방식으로 한다. 엣지에 60초 캐시되므로(s-maxage=60) 캐시 무효화 쿼리, 커스텀 헤더, fetch의 cache 옵션을
-// 붙이지 않는다. 응답의 Date, Age 헤더로 서버 시각 보정값을 한 번 계산한다(§5.3).
+// 붙이지 않는다.
+// 서버 시각 보정값도 여기서 정한다(§5.3). 시간 응답을 먼저 쓰고, 못 받으면 이 응답의 Date만 쓴다(Age는 쓰지 않는다).
+// 이벤트 정보를 넘기기 전에 보정을 마치므로 화면은 처음부터 보정된 now()로 판정한다.
 // 실패는 EventInfoError로 던지고, 화면 분류(403/404 → 없는 이벤트, 그 밖 → 연결 오류)는 lib/errors.ts가 정한다.
 // 개발 빌드에서는 개발 서버에 /event.json이 없으므로 항상 목을 쓴다(운영 번들에서는 이 분기가 빠진다, §9).
 export async function getEventInfo(): Promise<EventInfo> {
   const res = import.meta.env.DEV ? await buildMockEventJsonResponse() : await fetch('/event.json')
   if (!res.ok) throw new EventInfoError(`요청 실패: GET /event.json -> ${res.status}`, res.status)
-  syncServerTime(res.headers.get('date'), res.headers.get('age'))
+  const dateOffsetMs = offsetFromDateHeader(res.headers.get('date'), deviceNow())
   if (!isJsonResponse(res)) throw new EventInfoError('event.json이 JSON이 아님', res.status)
   let body: unknown
   try {
@@ -125,7 +167,9 @@ export async function getEventInfo(): Promise<EventInfo> {
   } catch {
     throw new EventInfoError('event.json 파싱 실패', res.status)
   }
-  return parseEventInfo(body)
+  const info = parseEventInfo(body)
+  setServerOffset((await measureServerOffset()) ?? dateOffsetMs)
+  return info
 }
 
 // 쿠폰 목록 응답 data는 { coupons: [...] }. 배열을 꺼내 돌려준다.

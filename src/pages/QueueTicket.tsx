@@ -3,18 +3,24 @@ import { useNavigate } from 'react-router-dom'
 import { requestTicket } from '../api'
 import { useEventInfo } from '../hooks/useEventInfo'
 import { useQueuePolling } from '../hooks/useQueuePolling'
+import { classifyError } from '../lib/errors'
 import { gateRetryDelayFor, isGateClosed } from '../lib/gateRetry'
+import { now } from '../lib/serverTime'
+import { entryJitterMs, startRetryDelayMs } from '../lib/waitingRoom'
 import ErrorNotice from './ErrorNotice'
 
 // 03 번호표. 새로고침하면 새 번호를 받으므로 myTicketNumber는 어떤 스토리지에도 저장하지 않는다. (CLAUDE.md §4)
 export default function QueueTicket() {
   const navigate = useNavigate()
-  const { eventId } = useEventInfo()
+  const { eventId, startAt } = useEventInfo()
+  const startAtMs = new Date(startAt).getTime()
   const [myTicketNumber, setMyTicketNumber] = useState<number | null>(null)
   const [ticketError, setTicketError] = useState<unknown>(null)
   const [ticketAttempt, setTicketAttempt] = useState(0)
   // 번호표 요청이 엣지 게이트의 503(입장 준비 중)을 받았다. 에러 화면 대신 이 화면을 유지하고 자동으로 다시 요청한다.
   const [ticketPreparing, setTicketPreparing] = useState(false)
+  // 번호표 요청이 시작 전 409를 받았다(브라우저 시계가 빨라 일찍 입장). 이 화면을 유지하고 시작 시각에 다시 요청한다.
+  const [ticketWaitingStart, setTicketWaitingStart] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -23,6 +29,7 @@ export default function QueueTicket() {
       (res) => {
         if (cancelled) return
         setTicketPreparing(false)
+        setTicketWaitingStart(false)
         setMyTicketNumber(res.ticket)
       },
       (e) => {
@@ -30,10 +37,20 @@ export default function QueueTicket() {
         if (isGateClosed(e)) {
           // Retry-After의 1~2배를 기다린 뒤 같은 요청을 다시 보낸다. (사용자 결정 2026-10-16)
           setTicketPreparing(true)
+          setTicketWaitingStart(false)
           retryId = setTimeout(() => setTicketAttempt((a) => a + 1), gateRetryDelayFor(e))
           return
         }
+        if (classifyError(e) === 'notStarted') {
+          // 서버 기준으로 아직 시작 전이다. 막다른 에러 화면 대신 보정된 now()로 startAt(이미 지났으면 1초 뒤)까지
+          // 기다렸다가 입장 지터를 더해 같은 요청을 다시 보낸다. (CLAUDE.md §7.3, 사용자 결정 2026-10-28)
+          setTicketPreparing(false)
+          setTicketWaitingStart(true)
+          retryId = setTimeout(() => setTicketAttempt((a) => a + 1), startRetryDelayMs(startAtMs, now(), entryJitterMs()))
+          return
+        }
         setTicketPreparing(false)
+        setTicketWaitingStart(false)
         setTicketError(e ?? new Error('번호표 요청 실패'))
       },
     )
@@ -41,7 +58,7 @@ export default function QueueTicket() {
       cancelled = true
       if (retryId !== null) clearTimeout(retryId)
     }
-  }, [eventId, ticketAttempt])
+  }, [eventId, startAtMs, ticketAttempt])
 
   const { gap, delayed, preparing, failed, error: pollingError, restart } = useQueuePolling(eventId, myTicketNumber)
 
@@ -88,6 +105,8 @@ export default function QueueTicket() {
         {delayed && <div className="caption">연결이 지연되고 있어요</div>}
         {/* 엣지 게이트가 입장 준비 중이라고 답하면 화면을 유지한 채 자동으로 다시 묻는다. */}
         {(ticketPreparing || preparing) && <div className="caption">입장을 준비하고 있어요</div>}
+        {/* 서버 기준으로 아직 시작 전이면 화면을 유지한 채 시작 시각에 자동으로 다시 요청한다. */}
+        {ticketWaitingStart && <div className="caption">이벤트 시작을 기다리고 있어요</div>}
       </div>
     </div>
   )

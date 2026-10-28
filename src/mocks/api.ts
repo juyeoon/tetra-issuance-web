@@ -16,6 +16,8 @@ import { deviceNow } from '../lib/serverTime'
 // - ?gateClosed=<초>|always: 엣지 게이트의 "입장 준비 중"을 흉내 낸다. 첫 API 요청부터 n초 동안(always면 계속)
 //   번호표, 커서, 쿠폰 목록, claim이 본문 없는 503 + x-tetra-gate: entry-closed를 돌려준다. 그 뒤에는 평소대로다.
 // - ?gateRetryAfter=<초>|none: 위 503의 Retry-After(기본 3초). none이면 헤더를 빼서 기본값(10초) 경로를 확인한다.
+// - ?notStartedFor=<초>: 첫 API 요청부터 n초 동안 번호표가 409 EVENT_NOT_STARTED를 돌려준다(브라우저 시계가 빨라
+//   시작 전에 입장한 상황). ?startsIn=과 같은 값을 주면 03이 시작 시각에 자동으로 다시 요청해 번호표를 받는지 볼 수 있다.
 
 const MOCK_LATENCY_MS = 200
 
@@ -90,6 +92,16 @@ function gateResponse(params: URLSearchParams): Promise<Response> {
   return new Promise((resolve) => setTimeout(() => resolve(res), MOCK_LATENCY_MS))
 }
 
+// --- 시작 전 409 ---
+let notStartedStartTime: number | null = null
+
+function notStartedNow(params: URLSearchParams): boolean {
+  const seconds = numberParam(params, 'notStartedFor', NaN)
+  if (!Number.isFinite(seconds)) return false
+  if (notStartedStartTime === null) notStartedStartTime = deviceNow()
+  return deviceNow() - notStartedStartTime < seconds * 1000
+}
+
 // --- 커서 ---
 let cursorStartTime: number | null = null
 let cursorCallCount = 0
@@ -133,6 +145,7 @@ export function mockApiResponse(
 
   const apiError = params.get('apiError')
   if (apiError !== null && route !== 'cursor') return errorResponse(apiError)
+  if (route === 'ticket' && notStartedNow(params)) return errorResponse('EVENT_NOT_STARTED')
 
   switch (route) {
     case 'cursor':
