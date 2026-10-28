@@ -1,3 +1,5 @@
+import { config } from '../config'
+
 // 02 대기방의 상태 판정. 시각은 모두 보정된 now()(serverTime.ts)로 넘긴다. (CLAUDE.md §4)
 
 // 02를 처음 열었을 때 한 번만 판정한다. 입장 OPEN 전에 들어온 사용자는 세션이 없으므로,
@@ -38,4 +40,20 @@ export function waitingRoomPhase(nowMs: number, startAtMs: number, endAtMs: numb
   if (nowMs >= endAtMs) return 'ended'
   if (nowMs >= startAtMs) return 'open'
   return 'countdown'
+}
+
+// 입장 지터. 02에서 버튼을 누른 뒤 0~jitterMaxMs만큼 기다렸다가 03으로 간다. 03이 시작 전 409를 받아
+// 시작 시각에 다시 요청할 때도 같은 지터를 쓴다(랜덤 값을 만드는 곳을 늘리지 않는다, CLAUDE.md §9).
+// random은 테스트용 주입 자리다.
+export function entryJitterMs(random: number = Math.random()): number {
+  return random * config.jitterMaxMs
+}
+
+// 번호표 요청이 시작 전 409(EVENT_NOT_STARTED)를 받았을 때 다시 요청할 때까지의 대기(ms).
+// 보정된 now() 기준으로 startAt까지 남은 시간에 입장 지터를 더한다. 화면 시계로는 이미 시작했는데 서버가
+// 아직이라고 하면(시계가 아직 조금 빠름) 최소 1초를 기다린다. (CLAUDE.md §7.3)
+export const START_RETRY_MIN_WAIT_MS = 1000
+
+export function startRetryDelayMs(startAtMs: number, nowMs: number, jitterMs: number): number {
+  return Math.max(START_RETRY_MIN_WAIT_MS, startAtMs - nowMs) + jitterMs
 }

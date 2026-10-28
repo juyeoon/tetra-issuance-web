@@ -93,6 +93,21 @@ describe('?apiError=', () => {
   })
 })
 
+describe('?notStartedFor=', () => {
+  it('첫 요청부터 n초 동안 번호표가 409 EVENT_NOT_STARTED, 그 뒤에는 번호를 준다', async () => {
+    vi.useFakeTimers()
+    withSearch('?mockApi=1&notStartedFor=2')
+    const first = noticeFor(() => requestTicket(1))
+    await vi.advanceTimersByTimeAsync(200)
+    expect((await first).situation).toBe('notStarted')
+
+    await vi.advanceTimersByTimeAsync(2000)
+    const second = requestTicket(1)
+    await vi.advanceTimersByTimeAsync(200)
+    await expect(second).resolves.toEqual({ ticket: 100 })
+  })
+})
+
 describe('mockApiResponse 경로 판별', () => {
   it('API 경로와 메서드가 맞을 때만 목으로 응답한다', () => {
     expect(mockApiResponse('/api/issuance/events/1/ticket', 'GET', '?mockApi=1')).toBeNull()

@@ -1,11 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { config } from '../config'
 import { useEventInfo } from '../hooks/useEventInfo'
 import { messageFor } from '../lib/errors'
 import { formatKstHHmm } from '../lib/kst'
 import { now } from '../lib/serverTime'
-import { entryNoticeOf, isEntryPendingRedirect, waitingRoomPhase } from '../lib/waitingRoom'
+import { entryJitterMs, entryNoticeOf, isEntryPendingRedirect, waitingRoomPhase } from '../lib/waitingRoom'
 import ReturnToEventButton from './ReturnToEventButton'
 
 function formatCountdown(remainingMs: number): string {
@@ -33,6 +32,14 @@ export default function WaitingRoom() {
   )
   const [nowMs, setNowMs] = useState(() => now())
   const [joining, setJoining] = useState(false)
+  // 입장 지터 타이머. 기다리는 사이 화면을 벗어나면 정리한다.
+  const joinTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(
+    () => () => {
+      if (joinTimerRef.current !== null) clearTimeout(joinTimerRef.current)
+    },
+    [],
+  )
 
   // 카운트다운, 시작, 종료를 같은 주기로 확인한다.
   useEffect(() => {
@@ -77,12 +84,11 @@ export default function WaitingRoom() {
   function handleClick() {
     if (!started || joining) return
     setJoining(true)
-    const delay = Math.random() * config.jitterMaxMs
-    setTimeout(() => {
+    joinTimerRef.current = setTimeout(() => {
       // 쿼리(개발용 목 옵션 등)를 다음 화면에도 그대로 넘긴다. replace로 이동해 방문 기록에 앱 화면을 한 칸만 둔다.
       // 그래서 03, 04에서 뒤로가기를 누르면 02가 아니라 앞 페이지(테넌트 페이지)로 나간다. (CLAUDE.md §3)
       navigate(`/queue${window.location.search}`, { replace: true })
-    }, delay)
+    }, entryJitterMs())
   }
 
   return (

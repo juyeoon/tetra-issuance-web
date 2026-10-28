@@ -5,9 +5,9 @@ import { deviceNow } from '../lib/serverTime'
 // dist/에 나오므로, data URL(?inline)로 이 모듈 안에 넣는다. 운영 번들에서는 이 모듈과 함께 빠진다.
 import bannerDummyUrl from './banner-dummy.svg?inline'
 
-// 개발 빌드 전용 목 /event.json. 개발 서버는 /event.json을 서빙하지 않으므로 개발 빌드에서는 항상 이 목을 쓴다.
-// src/api/의 import.meta.env.DEV 분기에서만 불리므로 운영 번들에서 빠진다. (CLAUDE.md §9)
-// 실제 응답과 같은 경로(상태 코드, content-type, Date 헤더 → syncServerTime, parseEventInfo)를 타도록
+// 개발 빌드 전용 목 /event.json과 서버 시각 응답(/api/issuance/time). 개발 서버는 두 경로를 서빙하지 않으므로
+// 개발 빌드에서는 항상 이 목을 쓴다. src/api/의 import.meta.env.DEV 분기에서만 불리므로 운영 번들에서 빠진다. (CLAUDE.md §9)
+// 실제 응답과 같은 경로(상태 코드, content-type, Date 헤더, 시간 응답 → 서버 시각 보정, parseEventInfo)를 타도록
 // Response 객체로 돌려준다. 옵션 값이 틀리면 그 값을 그대로 넣고 검증은 parseEventInfo가 한다.
 
 function numberParam(params: URLSearchParams, name: string): number | null {
@@ -54,11 +54,27 @@ function mockLayout(params: URLSearchParams): unknown {
   return layout
 }
 
+// ?clockSkew=<초>: 목의 "서버 시각"을 실제 + n초로 꾸민다. event.json의 Date, 시간 응답, 목의 시각들이 모두 이 값을 쓴다.
+function mockServerNowMs(params: URLSearchParams): number {
+  return deviceNow() + (numberParam(params, 'clockSkew') ?? 0) * 1000
+}
+
+// 목 서버 시각 응답. 운영에서는 api-gate CloudFront Function이 { now: epoch ms }를 no-store로 돌려준다.
+// ?timeApi=fail이면 네트워크 실패를 흉내 내 event.json의 Date로 대체하는 경로를 확인한다.
+export function buildMockTimeResponse(search: string = window.location.search): Promise<Response> {
+  const params = new URLSearchParams(search)
+  if (params.get('timeApi') === 'fail') return Promise.reject(new TypeError('Failed to fetch'))
+  return Promise.resolve(
+    new Response(JSON.stringify({ now: mockServerNowMs(params) }), {
+      status: 200,
+      headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+    }),
+  )
+}
+
 export function buildMockEventJsonResponse(search: string = window.location.search): Promise<Response> {
   const params = new URLSearchParams(search)
-
-  // ?clockSkew=<초>: 목 응답의 Date를 실제 + n초로 꾸민다. 목의 시각들도 이 "서버 시각" 기준으로 만든다.
-  const serverNowMs = deviceNow() + (numberParam(params, 'clockSkew') ?? 0) * 1000
+  const serverNowMs = mockServerNowMs(params)
 
   // ?startsIn=<초>: startAt = 서버 시각 + n초(기본 15초). ?endsIn=<초>: endAt = 서버 시각 + n초(기본 startAt + 2시간).
   // ?endsIn=만 주면 startAt을 endAt − 2시간으로 둔다(?endsIn=-60처럼 이미 종료된 이벤트를 바로 볼 수 있게).
@@ -84,13 +100,14 @@ export function buildMockEventJsonResponse(search: string = window.location.sear
     layout: mockLayout(params),
   }
 
-  return Promise.resolve(
-    new Response(JSON.stringify(body), {
-      status: 200,
-      headers: {
-        'content-type': 'application/json; charset=utf-8',
-        date: new Date(serverNowMs).toUTCString(),
-      },
-    }),
-  )
+  const headers: Record<string, string> = {
+    'content-type': 'application/json; charset=utf-8',
+    date: new Date(serverNowMs).toUTCString(),
+  }
+  // ?eventJsonAge=<초>: 엣지 캐시 응답처럼 Age를 붙인다. Date는 지금 시각 그대로라 Age를 더하면 그만큼 앞서 간다
+  // (2026-10-28 dev 이벤트 12에서 카운트다운이 일찍 끝난 상황). 보정은 Age를 쓰지 않아야 한다.
+  const age = params.get('eventJsonAge')
+  if (age !== null) headers.age = age
+
+  return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers }))
 }
